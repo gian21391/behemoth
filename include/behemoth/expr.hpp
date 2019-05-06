@@ -29,6 +29,7 @@
 #include <string>
 #include <unordered_map>
 #include <functional>
+#include <utility>
 
 namespace behemoth
 {
@@ -53,9 +54,9 @@ using expr_attr = unsigned;
 
 struct expr_node
 {
-  expr_node( std::string name, const std::vector<unsigned>& children, const expr_attr attr = expr_attr_enum::_no )
-    : _name( name )
-    , _children( children )
+  expr_node( std::string name, std::vector<unsigned>  children, const expr_attr attr = expr_attr_enum::_no )
+    : _name(std::move( name ))
+    , _children(std::move( children ))
     , _attr( attr )
   {}
 
@@ -138,7 +139,7 @@ public:
   unsigned count_nodes( unsigned e ) const
   {
     const auto& expr = _exprs[ e ];
-    if ( expr._children.size() == 0u )
+    if ( expr._children.empty() )
     {
       return 1;
     }
@@ -150,6 +151,16 @@ public:
     }
 
     return counter;
+  }
+
+  uint32_t get_child( unsigned e, uint32_t index ) const
+  {
+    return _exprs[e]._children[index];
+  }
+
+  const expr_node& get_child_node( unsigned e, uint32_t index ) const
+  {
+    return _exprs[_exprs[e]._children[index]];
   }
 
   fun_strash_map_t _fun_strash;
@@ -168,7 +179,7 @@ public:
     const auto& expr = _ctx._exprs[ e ];
 
     auto str = expr._name;
-    if ( expr._children.size() > 0u )
+    if ( !expr._children.empty() )
     {
       str += '(';
       str += as_string( expr._children[ 0u ] );
