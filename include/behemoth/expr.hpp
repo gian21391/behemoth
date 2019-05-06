@@ -64,7 +64,7 @@ struct expr_node
   {
     if ( _name != e._name ) return false;
     if ( _children.size() != e._children.size() ) return false;
-    for ( auto i = 0; i < _children.size(); ++i )
+    for ( auto i = 0u; i < _children.size(); ++i )
     {
       if ( _children[i] != e._children[i] )
       {
