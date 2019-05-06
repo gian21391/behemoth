@@ -26,10 +26,13 @@
 #pragma once
 
 #include <behemoth/expr.hpp>
-#include <queue>
-#include <iostream>
 #include <cassert>
 #include <fmt/format.h>
+#include <iostream>
+#include <queue>
+#include <algorithm>
+#include <map>
+#include <utility>
 
 namespace behemoth
 {
@@ -132,7 +135,7 @@ struct path_t
 
 std::vector<std::pair<unsigned,unsigned>> refine_expression_recurse( context& ctx, unsigned e, path_t path, const rules_t& rules )
 {
-  if ( path.indices.size() == 0u )
+  if ( path.indices.empty() )
   {
     /* apply all rules */
     std::vector<std::pair<unsigned,unsigned>> results;
@@ -140,7 +143,7 @@ std::vector<std::pair<unsigned,unsigned>> refine_expression_recurse( context& ct
     {
       if ( e == r.match )
       {
-        results.push_back( {r.replace, r.cost} );
+        results.emplace_back( r.replace, r.cost );
       }
     }
     return results;
@@ -171,7 +174,7 @@ std::vector<std::pair<unsigned,unsigned>> refine_expression_recurse( context& ct
       new_children.push_back( ctx._exprs[ e ]._children[ i ] );
     }
 
-    results.push_back( {ctx.make_fun( ctx._exprs[ e ]._name, new_children, ctx._exprs[ e ]._attr ), c.second} );
+    results.emplace_back( ctx.make_fun( ctx._exprs[ e ]._name, new_children, ctx._exprs[ e ]._attr ), c.second );
   }
 
   return results;
@@ -186,7 +189,7 @@ path_t get_path_to_concretizable_element( context& ctx, unsigned e )
   }
 
   /* variable or constant */
-  if ( ctx._exprs[ e ]._children.size() == 0u )
+  if ( ctx._exprs[ e ]._children.empty() )
   {
     return path_t( std::numeric_limits<unsigned>::max() );
   }
@@ -224,22 +227,24 @@ public:
   using expr_queue_t = std::priority_queue<cexpr_t, std::vector<cexpr_t>, expr_greater_than>;
 
 public:
-  enumerator( context& ctx, const rules_t& rules, int max_cost )
+  enumerator( context& ctx, rules_t  rules, int max_cost )
     : ctx( ctx )
-    , rules( rules )
+    , rules(std::move( rules ))
     , max_cost( max_cost )
     , candidate_expressions( ctx ) /* pass ctx to the expr_greater_than */
   {}
 
-  virtual ~enumerator() {}
+  virtual ~enumerator() = default;
 
   void add_expression( unsigned e );
   void deduce( unsigned number_of_steps = 1u );
 
   virtual bool is_redundant_in_search_order( unsigned e ) const;
 
-  inline bool check_double_application( unsigned e ) const;
-  inline bool check_idempotence_and_commutative( unsigned e ) const;
+  bool check_double_application( unsigned e ) const;
+  bool check_idempotence_and_commutative( unsigned e ) const;
+  bool check_idempotence( unsigned e ) const;
+  bool check_commutativity( unsigned e ) const;
 
   virtual void on_expression( cexpr_t e )
   {
@@ -271,7 +276,7 @@ protected:
   bool quit_enumeration = false;
 
   rules_t rules;
-  int max_cost;
+  unsigned max_cost;
   expr_queue_t candidate_expressions;
 
   unsigned current_costs = 0u;
@@ -356,6 +361,77 @@ bool enumerator::check_double_application( unsigned e ) const
   return false;
 }
 
+void get_leaves_of_same_op_impl( context& ctx, unsigned e, const std::string& op, std::vector<unsigned>& leaves )
+{
+  const auto expr = ctx._exprs[e];
+  for ( const auto& c : expr._children )
+  {
+    if ( ctx._exprs[c]._children.empty() && ctx._exprs[c]._name[0] != '_' )
+    {
+      leaves.emplace_back( c );
+    }
+    if ( ctx._exprs[c]._name == op )
+    {
+      get_leaves_of_same_op_impl( ctx, c, op, leaves );
+    }
+  }
+}
+
+// this function gets all the leaves of the chains of the same operation
+std::vector<unsigned> get_leaves_of_same_op( context& ctx, unsigned e )
+{
+  std::vector<unsigned> leaves;
+  const auto expr = ctx._exprs[e];
+  for ( const auto& c : expr._children )
+  {
+    if ( ctx._exprs[c]._children.empty() && ctx._exprs[c]._name[0] != '_' )
+    {
+      leaves.emplace_back( c );
+    }
+    if ( ctx._exprs[c]._name == expr._name )
+    {
+      get_leaves_of_same_op_impl( ctx, c, expr._name, leaves );
+    }
+  }
+  return leaves;
+}
+
+bool enumerator::check_idempotence( unsigned e ) const
+{
+  // get all chains of same op starting from e
+  auto leaves = get_leaves_of_same_op( ctx, e );
+
+  // check for equal elements
+  if ( leaves.size() < 2 )
+  {
+    return false;
+  }
+
+  std::map<unsigned, unsigned> dup;
+  std::for_each( leaves.begin(), leaves.end(), [&dup]( unsigned val ) { dup[val]++; } );
+  auto result = std::find_if( dup.begin(), dup.end(), []( std::pair<const unsigned int, unsigned int> val ) { return val.second > 1; } );
+  return result != dup.end();
+}
+
+bool enumerator::check_commutativity( unsigned e ) const
+{
+  // get all chains of same op starting from e
+  auto leaves = get_leaves_of_same_op( ctx, e );
+
+  // check ordering of elements
+  if ( leaves.size() < 2 )
+  {
+    return false;
+  }
+
+  if ( !std::is_sorted( leaves.begin(), leaves.end() ) )
+  {
+    return true;
+  }
+
+  return false;
+}
+
 bool enumerator::check_idempotence_and_commutative( unsigned e ) const
 {
   const auto is_set = []( unsigned value, unsigned flag ) { return ( ( value & flag ) == flag ); };
@@ -377,6 +453,22 @@ bool enumerator::check_idempotence_and_commutative( unsigned e ) const
     }
     else if ( is_set( expr._attr, expr_attr_enum::_idempotent ) &&
               expr._children[0u] == expr._children[1u] )
+    {
+      return true;
+    }
+  }
+
+  if ( expr._name[0] != '_' && expr._children.size() == 2u && is_set( expr._attr, expr_attr_enum::_idempotent ) )
+  {
+    if ( check_idempotence( e ) )
+    {
+      return true;
+    }
+  }
+
+  if ( expr._name[0] != '_' && expr._children.size() == 2u && is_set( expr._attr, expr_attr_enum::_commutative ) )
+  {
+    if ( check_commutativity( e ) )
     {
       return true;
     }
